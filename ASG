@@ -1,0 +1,105 @@
+
+# Security Group for EC2 instances
+resource "aws_security_group" "web_sg" {
+  name_prefix = "web-sg"
+  vpc_id      = "vpc-04f397dac4594c401"
+  # Allow SSH access
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  # Allow HTTP access
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  # Allow all outbound traffic
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+# Launch Template
+resource "aws_launch_template" "web_lt" {
+  name_prefix    = "Test-ASG"
+  instance_type  = "t2.micro" 
+  image_id       = "ami-053b12d3152c0cc71" 
+  key_name       = "Durga-Test"            
+  security_group_names = [aws_security_group.web_sg.name]
+  # User data to install and start a web server
+  user_data = <<-EOT
+    #!/bin/bash
+    apt update -y
+    apt install -y apache2 stress
+    systemctl start apache2
+    systemctl enable apache2
+    echo "Hello from POC setup" > /var/www/html/index.html
+  EOT
+}
+# Auto Scaling Group
+resource "aws_autoscaling_group" "web_asg" {
+  launch_template {
+    id      = aws_launch_template.web_lt.id
+    version = "$Latest"
+  }
+  vpc_zone_identifier      = ["subnet-01a82d77e9288d6ef", "subnet-0eb00a789c850c22d"] # Replace with your Subnet IDs
+  min_size                 = 1
+  max_size                 = 3
+  desired_capacity         = 1
+  health_check_type        = "EC2"
+  health_check_grace_period = 300
+  # Tags
+  tag {
+    key                 = "Name"
+    value               = "web-instance"
+    propagate_at_launch = true
+  }
+}
+# CloudWatch Alarms
+resource "aws_cloudwatch_metric_alarm" "high_cpu_alarm" {
+  alarm_name          = "High-CPU-Alarm"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 50.0
+  alarm_actions       = [aws_autoscaling_policy.scale_out.arn]
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.web_asg.name
+  }
+}
+resource "aws_cloudwatch_metric_alarm" "low_cpu_alarm" {
+  alarm_name          = "Low-CPU-Alarm"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 25.0
+  alarm_actions       = [aws_autoscaling_policy.scale_in.arn]
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.web_asg.name
+  }
+}
+# Scaling Policies
+resource "aws_autoscaling_policy" "scale_out" {
+  name                   = "scale-out-policy"
+  scaling_adjustment     = 1
+  adjustment_type        = "ChangeInCapacity"
+  autoscaling_group_name = aws_autoscaling_group.web_asg.name
+}
+resource "aws_autoscaling_policy" "scale_in" {
+  name                   = "scale-in-policy"
+  scaling_adjustment     = -1
+  adjustment_type        = "ChangeInCapacity"
+  autoscaling_group_name = aws_autoscaling_group.web_asg.name
+}
